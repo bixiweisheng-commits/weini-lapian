@@ -6,6 +6,56 @@ const MODEL_ANALYSIS = 'gemini-2.5-flash';
 const MODEL_IMAGE_GEN = 'gemini-2.5-flash-image'; // Nano Banana
 
 /**
+ * Concurrency Queue Manager
+ * Limits the number of simultaneous requests to prevent 429 errors.
+ */
+class RequestQueue {
+  private concurrency: number;
+  private active: number;
+  private queue: Array<() => void>;
+
+  constructor(concurrency: number) {
+    this.concurrency = concurrency;
+    this.active = 0;
+    this.queue = [];
+  }
+
+  add<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const run = async () => {
+        this.active++;
+        try {
+          const result = await task();
+          resolve(result);
+        } catch (err) {
+          reject(err);
+        } finally {
+          this.active--;
+          this.next();
+        }
+      };
+
+      if (this.active < this.concurrency) {
+        run();
+      } else {
+        this.queue.push(run);
+      }
+    });
+  }
+
+  private next() {
+    if (this.active < this.concurrency && this.queue.length > 0) {
+      const nextTask = this.queue.shift();
+      if (nextTask) nextTask();
+    }
+  }
+}
+
+// Create a global queue instance. 
+// Concurrency set to 3: Good balance between speed and stability for most keys.
+const apiQueue = new RequestQueue(3);
+
+/**
  * Utility: Wait for a specified duration (ms)
  */
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -19,9 +69,6 @@ const withAuthHeaderInjection = async <T>(
     baseUrl: string | undefined, 
     fn: () => Promise<T>
 ): Promise<T> => {
-    // Check if we need to patch.
-    // 1. BaseURL is present (Custom Proxy)
-    // 2. OR Key starts with "sk-" (OpenAI-compatible / Proxy Key)
     const isProxyKey = apiKey.startsWith("sk-");
     const needsPatch = !!baseUrl || isProxyKey;
 
@@ -31,33 +78,30 @@ const withAuthHeaderInjection = async <T>(
 
     const originalFetch = window.fetch;
     
-    // Patch fetch
     window.fetch = async (input, init) => {
         const urlStr = input.toString();
         
-        // Determine if this request is targeting our custom base or google
-        const targetBase = baseUrl ? baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') : 'googleapis.com';
+        // Simple check: if baseUrl is provided, match it. 
+        // If not, match generic google apis just in case we are using a proxy key directly.
+        const shouldIntercept = baseUrl 
+            ? urlStr.includes(baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')) 
+            : true;
         
-        // Only modify requests going to our target
-        if (urlStr.includes(targetBase)) {
+        if (shouldIntercept) {
             init = init || {};
-            init.headers = new Headers(init.headers);
+            const headers = new Headers(init.headers);
             
-            // Inject Headers - Additive only, do not remove query params.
-            // Many proxies expect the key in the Authorization header.
-            if (!init.headers.has("Authorization")) {
-                init.headers.set("Authorization", `Bearer ${apiKey}`);
+            // Standardize Headers for Proxies (OneAPI/NewAPI compatibility)
+            // 1. Authorization: Bearer <key>
+            if (!headers.has("Authorization")) {
+                headers.set("Authorization", `Bearer ${apiKey}`);
+            }
+            // 2. x-goog-api-key: <key> (Google Native style)
+            if (!headers.has("x-goog-api-key")) {
+                headers.set("x-goog-api-key", apiKey);
             }
             
-            // Also inject x-goog-api-key for compatibility
-            if (!init.headers.has("x-goog-api-key")) {
-                init.headers.set("x-goog-api-key", apiKey);
-            }
-
-            // NOTE: We do NOT remove the 'key' query param anymore. 
-            // The SDK adds it automatically (using the real key now).
-            // Removing it caused issues with some proxies that strictly validated the URL param.
-            
+            init.headers = headers;
             return originalFetch(urlStr, init);
         }
         return originalFetch(input, init);
@@ -66,16 +110,14 @@ const withAuthHeaderInjection = async <T>(
     try {
         return await fn();
     } finally {
-        // Restore fetch immediately
         window.fetch = originalFetch;
     }
 };
 
 /**
  * Retry wrapper for API calls.
- * Handles 429 (Quota Exceeded) and 5xx errors.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 2000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 1000): Promise<T> {
     let currentDelay = initialDelay;
     
     for (let i = 0; i < retries; i++) {
@@ -83,19 +125,21 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 20
             return await fn();
         } catch (error: any) {
             const msg = error.message || "";
+            // 429: Too Many Requests
             const isQuotaError = msg.includes("429") || msg.includes("Quota exceeded") || error.status === 429;
-            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503");
-            const isLoadError = msg.includes("Failed to fetch") || msg.includes("Load failed");
+            // 5xx: Server Errors
+            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504");
             
-            // If it's the last retry, throw
             if (i === retries - 1) throw error;
 
-            if (isQuotaError || isServerError || isLoadError) {
-                console.warn(`API Error (${isQuotaError ? 'Quota' : 'Network/Server'}). Retrying in ${currentDelay}ms... (Attempt ${i + 1}/${retries})`);
-                await delay(currentDelay);
-                currentDelay *= 2; // Exponential backoff
+            if (isQuotaError || isServerError) {
+                // If quota error, wait longer
+                const waitTime = isQuotaError ? currentDelay * 2 : currentDelay;
+                console.warn(`API Error (${isQuotaError ? '429 Quota' : 'Server'}). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${retries})`);
+                await delay(waitTime);
+                currentDelay *= 1.5; 
             } else {
-                throw error; // Throw other errors immediately (e.g., Auth error)
+                throw error;
             }
         }
     }
@@ -115,13 +159,13 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
         if (finalBaseUrl.endsWith('/')) {
             finalBaseUrl = finalBaseUrl.slice(0, -1);
         }
-        // Remove version suffixes to ensure clean base - SDK appends version
-        finalBaseUrl = finalBaseUrl.replace(/(\/v1beta|\/v1|\/google|\/goog)$/i, '');
+        // NOTE: We do NOT aggressively strip /v1 etc here anymore, 
+        // relying on the user to provide the correct base (e.g., https://api.proxy.com)
+        // The SDK will append /v1beta/... automatically.
+        // If the user provided a full path ending in /v1, it might break, so we strip common suffixes safely.
+        finalBaseUrl = finalBaseUrl.replace(/\/v1beta\/?$/i, '').replace(/\/v1\/?$/i, '');
     }
 
-    // CRITICAL FIX: Always use the REAL API Key.
-    // Previous usage of dummy key caused standard Google calls to fail auth,
-    // and caused proxies to fail if they validated the `key` query param.
     return new GoogleGenAI({ 
         apiKey: apiKey, 
         baseUrl: finalBaseUrl 
@@ -129,19 +173,17 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
 };
 
 /**
- * Analyzes a video frame to extract filmmaking notes and an image prompt.
+ * Analyzes a video frame.
  */
 export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string, baseUrl?: string): Promise<ShotAnalysis> => {
   if (!apiKey && !baseUrl) {
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Wrap with Retry and Header Injection
-  return withRetry(async () => {
+  // Use the queue to limit concurrency
+  return apiQueue.add(() => withRetry(async () => {
     return withAuthHeaderInjection(apiKey, baseUrl, async () => {
         const ai = createAIClient(apiKey, baseUrl);
-        
-        // Clean base64 string
         const cleanBase64 = base64Image.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
 
         const prompt = `
@@ -191,34 +233,37 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
           try {
               return JSON.parse(text) as ShotAnalysis;
           } catch (e) {
-              // Handle non-JSON responses (often HTML errors from proxies)
               if (text.trim().startsWith("<")) {
-                  // Extract title from HTML if possible
                   const titleMatch = text.match(/<title>(.*?)<\/title>/i);
                   const title = titleMatch ? titleMatch[1] : "Unknown HTML Error";
-                  throw new Error(`Proxy Error: ${title}. Content: ${text.substring(0, 50)}...`);
+                  throw new Error(`Proxy Error: ${title}`);
               }
               throw new Error("JSON Parse Error");
           }
 
         } catch (error: any) {
           console.error("Gemini Analysis Error:", error);
-          if (error.message) throw error;
+          // Pass through specific errors
+          if (error.message && (error.message.includes("429") || error.message.includes("500"))) {
+             throw error; 
+          }
+          if (error.message) throw new Error(error.message);
           throw new Error("Gemini Request Failed");
         }
     });
-  }, 3, 2000); // Retry 3 times, start with 2s delay
+  }, 3, 1500)); // Retry 3 times
 };
 
 /**
- * Generates an image using the "Nano Banana" model based on a prompt.
+ * Generates an image using Nano Banana.
  */
 export const generateImageWithNanoBanana = async (prompt: string, apiKey: string, baseUrl?: string): Promise<string> => {
   if (!apiKey && !baseUrl) {
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  return withRetry(async () => {
+  // Use the queue here too! This prevents 429s when spamming the "Generate" button.
+  return apiQueue.add(() => withRetry(async () => {
       return withAuthHeaderInjection(apiKey, baseUrl, async () => {
           const ai = createAIClient(apiKey, baseUrl);
 
@@ -237,14 +282,24 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
               }
             });
 
-            if (response.candidates?.[0]?.content?.parts) {
-              for (const part of response.candidates[0].content.parts) {
-                if (part.inlineData && part.inlineData.data) {
-                  return `data:image/png;base64,${part.inlineData.data}`;
-                }
-              }
+            // Check specifically for candidates content parts
+            if (response.candidates && response.candidates.length > 0) {
+                 const parts = response.candidates[0].content?.parts;
+                 if (parts) {
+                     for (const part of parts) {
+                        if (part.inlineData && part.inlineData.data) {
+                          return `data:image/png;base64,${part.inlineData.data}`;
+                        }
+                     }
+                 }
             }
-            throw new Error("响应中未找到图片数据");
+            
+            // If we got here, maybe check response.text for an error message returned as text
+            if (response.text) {
+                console.warn("Nano Banana returned text instead of image:", response.text);
+            }
+
+            throw new Error("响应中未找到图片数据 (可能被模型拒绝或格式错误)");
 
           } catch (error: any) {
             console.error("Nano Banana Generation Error:", error);
@@ -252,5 +307,5 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
             throw new Error("生成图片失败");
           }
       });
-  }, 2, 2000);
+  }, 2, 2000));
 };
