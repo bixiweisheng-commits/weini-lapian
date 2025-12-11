@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { ShotAnalysis } from "../types";
 
 // Models mapping
@@ -6,8 +6,8 @@ const MODEL_ANALYSIS = 'gemini-2.5-flash';
 const MODEL_IMAGE_GEN = 'gemini-2.5-flash-image'; // Nano Banana
 
 /**
- * Concurrency Queue Manager
- * Limits the number of simultaneous requests to prevent 429 errors.
+ * Concurrency Queue Manager (High Speed Mode)
+ * Limits simultaneous requests simply to manage network load, but does not block globally on errors.
  */
 class RequestQueue {
   private concurrency: number;
@@ -51,9 +51,8 @@ class RequestQueue {
   }
 }
 
-// Create a global queue instance. 
-// Concurrency set to 3: Good balance between speed and stability for most keys.
-const apiQueue = new RequestQueue(3);
+// Concurrency increased to 5 for maximum speed as requested.
+const apiQueue = new RequestQueue(5);
 
 /**
  * Utility: Wait for a specified duration (ms)
@@ -62,7 +61,6 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Helper to patch window.fetch temporarily to inject headers.
- * Adds 'Authorization: Bearer' and 'x-goog-api-key' for proxies that need them.
  */
 const withAuthHeaderInjection = async <T>(
     apiKey: string, 
@@ -81,8 +79,6 @@ const withAuthHeaderInjection = async <T>(
     window.fetch = async (input, init) => {
         const urlStr = input.toString();
         
-        // Simple check: if baseUrl is provided, match it. 
-        // If not, match generic google apis just in case we are using a proxy key directly.
         const shouldIntercept = baseUrl 
             ? urlStr.includes(baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')) 
             : true;
@@ -91,12 +87,9 @@ const withAuthHeaderInjection = async <T>(
             init = init || {};
             const headers = new Headers(init.headers);
             
-            // Standardize Headers for Proxies (OneAPI/NewAPI compatibility)
-            // 1. Authorization: Bearer <key>
             if (!headers.has("Authorization")) {
                 headers.set("Authorization", `Bearer ${apiKey}`);
             }
-            // 2. x-goog-api-key: <key> (Google Native style)
             if (!headers.has("x-goog-api-key")) {
                 headers.set("x-goog-api-key", apiKey);
             }
@@ -125,19 +118,17 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 10
             return await fn();
         } catch (error: any) {
             const msg = error.message || "";
-            // 429: Too Many Requests
-            const isQuotaError = msg.includes("429") || msg.includes("Quota exceeded") || error.status === 429;
-            // 5xx: Server Errors
-            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504");
+            const isQuotaError = msg.includes("429") || msg.includes("Quota") || msg.includes("RESOURCE_EXHAUSTED") || error.status === 429;
+            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504") || msg.includes("Overloaded");
             
             if (i === retries - 1) throw error;
 
             if (isQuotaError || isServerError) {
-                // If quota error, wait longer
-                const waitTime = isQuotaError ? currentDelay * 2 : currentDelay;
-                console.warn(`API Error (${isQuotaError ? '429 Quota' : 'Server'}). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${retries})`);
+                // Linear backoff instead of exponential to retry faster
+                const waitTime = currentDelay; 
+                console.warn(`API Error (${isQuotaError ? '429' : 'Server'}). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${retries})`);
                 await delay(waitTime);
-                currentDelay *= 1.5; 
+                // currentDelay *= 1.5; // Removed exponential increase for speed
             } else {
                 throw error;
             }
@@ -159,10 +150,6 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
         if (finalBaseUrl.endsWith('/')) {
             finalBaseUrl = finalBaseUrl.slice(0, -1);
         }
-        // NOTE: We do NOT aggressively strip /v1 etc here anymore, 
-        // relying on the user to provide the correct base (e.g., https://api.proxy.com)
-        // The SDK will append /v1beta/... automatically.
-        // If the user provided a full path ending in /v1, it might break, so we strip common suffixes safely.
         finalBaseUrl = finalBaseUrl.replace(/\/v1beta\/?$/i, '').replace(/\/v1\/?$/i, '');
     }
 
@@ -180,7 +167,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Use the queue to limit concurrency
+  // Queue manages concurrency (5)
   return apiQueue.add(() => withRetry(async () => {
     return withAuthHeaderInjection(apiKey, baseUrl, async () => {
         const ai = createAIClient(apiKey, baseUrl);
@@ -243,15 +230,11 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
 
         } catch (error: any) {
           console.error("Gemini Analysis Error:", error);
-          // Pass through specific errors
-          if (error.message && (error.message.includes("429") || error.message.includes("500"))) {
-             throw error; 
-          }
-          if (error.message) throw new Error(error.message);
+          if (error.message) throw error;
           throw new Error("Gemini Request Failed");
         }
     });
-  }, 3, 1500)); // Retry 3 times
+  }, 3, 1000));
 };
 
 /**
@@ -262,7 +245,7 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Use the queue here too! This prevents 429s when spamming the "Generate" button.
+  // Queue manages concurrency (5)
   return apiQueue.add(() => withRetry(async () => {
       return withAuthHeaderInjection(apiKey, baseUrl, async () => {
           const ai = createAIClient(apiKey, baseUrl);
@@ -278,11 +261,17 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
               config: {
                 imageConfig: {
                   aspectRatio: "16:9", 
-                }
+                },
+                // Add Safety Settings to BLOCK_NONE to prevent model from refusing prompts
+                safetySettings: [
+                  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                ]
               }
             });
 
-            // Check specifically for candidates content parts
             if (response.candidates && response.candidates.length > 0) {
                  const parts = response.candidates[0].content?.parts;
                  if (parts) {
@@ -294,12 +283,12 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
                  }
             }
             
-            // If we got here, maybe check response.text for an error message returned as text
             if (response.text) {
                 console.warn("Nano Banana returned text instead of image:", response.text);
+                throw new Error("模型拒绝生成图片 (安全拦截)");
             }
 
-            throw new Error("响应中未找到图片数据 (可能被模型拒绝或格式错误)");
+            throw new Error("响应中未找到图片数据");
 
           } catch (error: any) {
             console.error("Nano Banana Generation Error:", error);
@@ -307,5 +296,5 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
             throw new Error("生成图片失败");
           }
       });
-  }, 2, 2000));
+  }, 2, 1000));
 };

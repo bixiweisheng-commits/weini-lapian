@@ -144,6 +144,11 @@ const App: React.FC = () => {
       }
   };
 
+  // Delete Shot Handler (Removed window.confirm for immediate feedback)
+  const handleDeleteShot = (shotId: string) => {
+    setShots(prev => prev.filter(s => s.id !== shotId));
+  };
+
   const handleFramesExtracted = useCallback(async (frames: { time: number; image: string }[]) => {
     if (!apiKey && !baseUrl) {
       setShowSettings(true);
@@ -303,6 +308,7 @@ const App: React.FC = () => {
                 shots={shots} 
                 onGenerateImage={handleGenerateImage} 
                 onRetryAnalysis={handleRetryAnalysis}
+                onDeleteShot={handleDeleteShot}
             />
           </div>
         )}

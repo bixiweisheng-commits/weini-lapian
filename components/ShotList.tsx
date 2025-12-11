@@ -1,14 +1,15 @@
 import React from 'react';
 import { Shot } from '../types';
-import { Zap, AlertCircle, Image as ImageIcon, Film, Loader2, Maximize, Video, Palette, Music, Clock, Download, RefreshCw } from 'lucide-react';
+import { Zap, AlertCircle, Image as ImageIcon, Film, Loader2, Maximize, Video, Palette, Music, Clock, Download, RefreshCw, Trash2 } from 'lucide-react';
 
 interface ShotListProps {
   shots: Shot[];
   onGenerateImage: (shotId: string) => void;
   onRetryAnalysis: (shotId: string) => void;
+  onDeleteShot: (shotId: string) => void;
 }
 
-export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage, onRetryAnalysis }) => {
+export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage, onRetryAnalysis, onDeleteShot }) => {
   if (shots.length === 0) return null;
 
   return (
@@ -27,6 +28,7 @@ export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage, onRe
               shot={shot} 
               onGenerateImage={() => onGenerateImage(shot.id)} 
               onRetryAnalysis={() => onRetryAnalysis(shot.id)}
+              onDelete={() => onDeleteShot(shot.id)}
             />
           </div>
         ))}
@@ -39,9 +41,10 @@ interface ShotCardProps {
   shot: Shot;
   onGenerateImage: () => void;
   onRetryAnalysis: () => void;
+  onDelete: () => void;
 }
 
-const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage, onRetryAnalysis }) => {
+const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage, onRetryAnalysis, onDelete }) => {
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
@@ -58,7 +61,22 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage, onRetryAnaly
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700 shadow-xl flex flex-col xl:flex-row print:border-gray-300 print:shadow-none print:bg-white print:text-black">
+    <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700 shadow-xl flex flex-col xl:flex-row print:border-gray-300 print:shadow-none print:bg-white print:text-black relative group/card">
+      
+      {/* Delete Button (Fixed: Immediate Action, High Z-Index, Prevent Defaults) */}
+      <button 
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onDelete();
+        }}
+        className="absolute top-2 right-2 z-40 p-2 bg-gray-900/90 text-gray-400 hover:text-red-400 hover:bg-gray-950 rounded-full transition-all border border-gray-600 hover:border-red-500/50 shadow-lg cursor-pointer hover:scale-110 active:scale-95 no-print"
+        title="删除此镜头"
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+
       {/* Visual Column */}
       <div className="xl:w-[400px] flex-shrink-0 border-b xl:border-b-0 xl:border-r border-gray-700 flex flex-col bg-black/20 print:bg-white print:border-gray-300">
         <div className="relative group">
@@ -75,7 +93,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage, onRetryAnaly
               e.stopPropagation();
               downloadImage(shot.originalImage, `shot-${shot.timestamp.toFixed(2)}.jpg`);
             }}
-            className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded transition-colors backdrop-blur-sm border border-white/10 z-20 hover:scale-105 no-print"
+            className="absolute bottom-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded transition-colors backdrop-blur-sm border border-white/10 z-20 hover:scale-105 no-print"
             title="下载原图"
           >
             <Download className="w-4 h-4" />
@@ -168,7 +186,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage, onRetryAnaly
           <div className="space-y-6 print:space-y-4">
             
             {/* Shot Stats Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mr-8"> {/* mr-8 to avoid overlap with delete button */}
               <div className="bg-gray-900/80 p-3 rounded-lg border border-gray-700/50 print:bg-white print:border-gray-300 print:text-black">
                 <div className="flex items-center gap-2 text-gray-500 text-xs mb-1 uppercase font-bold print:text-gray-700">
                   <Maximize className="w-3 h-3" /> 景别
