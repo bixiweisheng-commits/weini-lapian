@@ -6,60 +6,62 @@ const MODEL_ANALYSIS = 'gemini-2.5-flash';
 const MODEL_IMAGE_GEN = 'gemini-2.5-flash-image'; // Nano Banana
 
 /**
- * Concurrency Queue Manager (Stable Mode)
- * Limits simultaneous requests to avoid 429 Rate Limit errors.
- * Now includes a delay between requests to be gentle on the API.
+ * Concurrent Queue Manager
+ * Allows limited concurrency (e.g., 2 requests) with a recovery window.
+ * Balances speed with rate stability.
  */
-class RequestQueue {
-  private concurrency: number;
-  private active: number;
-  private queue: Array<() => void>;
-  private timeBetweenRequests: number;
+class ConcurrentQueue {
+  private queue: Array<{
+    task: () => Promise<any>;
+    resolve: (value: any) => void;
+    reject: (reason?: any) => void;
+  }> = [];
+  private activeCount = 0;
+  private maxConcurrency: number;
+  private minDelayMs: number;
 
-  constructor(concurrency: number, timeBetweenRequests: number = 2000) {
-    this.concurrency = concurrency;
-    this.timeBetweenRequests = timeBetweenRequests;
-    this.active = 0;
-    this.queue = [];
+  constructor(maxConcurrency: number = 2, minDelayMs: number = 800) {
+    this.maxConcurrency = maxConcurrency;
+    this.minDelayMs = minDelayMs;
   }
 
   add<T>(task: () => Promise<T>): Promise<T> {
     return new Promise((resolve, reject) => {
-      const run = async () => {
-        this.active++;
-        try {
-          const result = await task();
-          resolve(result);
-        } catch (err) {
-          reject(err);
-        } finally {
-          this.active--;
-          // Add a delay before processing the next item in queue to recover rate limit quota
-          setTimeout(() => {
-              this.next();
-          }, this.timeBetweenRequests);
-        }
-      };
-
-      if (this.active < this.concurrency) {
-        run();
-      } else {
-        this.queue.push(run);
-      }
+      this.queue.push({ task, resolve, reject });
+      this.processNext();
     });
   }
 
-  private next() {
-    if (this.active < this.concurrency && this.queue.length > 0) {
-      const nextTask = this.queue.shift();
-      if (nextTask) nextTask();
+  private async processNext() {
+    // If we are at max concurrency or queue is empty, stop.
+    if (this.activeCount >= this.maxConcurrency || this.queue.length === 0) {
+      return;
+    }
+
+    const item = this.queue.shift();
+    if (!item) return;
+
+    this.activeCount++;
+
+    try {
+      const result = await item.task();
+      item.resolve(result);
+    } catch (error) {
+      item.reject(error);
+    } finally {
+      // Logic: Wait for the minDelayMs BEFORE releasing the slot for the next task.
+      // This acts as a rate limiter between the completion of one task and start of another in this "lane".
+      setTimeout(() => {
+        this.activeCount--;
+        this.processNext();
+      }, this.minDelayMs);
     }
   }
 }
 
-// Concurrency set to 1 for maximum stability.
-// Added 1500ms delay between successful requests to prevent burst limits.
-const apiQueue = new RequestQueue(1, 1500);
+// Config: Concurrency 2, Delay 800ms.
+// This allows roughly 2 requests per second in parallel, much faster than before.
+const apiQueue = new ConcurrentQueue(2, 800);
 
 /**
  * Utility: Wait for a specified duration (ms)
@@ -88,11 +90,11 @@ const withAuthHeaderInjection = async <T>(
         
         const shouldIntercept = baseUrl 
             ? urlStr.includes(baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')) 
-            : true;
+            : urlStr.includes("googleapis.com");
         
         if (shouldIntercept) {
-            init = init || {};
-            const headers = new Headers(init.headers);
+            const newInit = { ...init } || {};
+            const headers = new Headers(newInit.headers);
             
             if (!headers.has("Authorization")) {
                 headers.set("Authorization", `Bearer ${apiKey}`);
@@ -101,8 +103,8 @@ const withAuthHeaderInjection = async <T>(
                 headers.set("x-goog-api-key", apiKey);
             }
             
-            init.headers = headers;
-            return originalFetch(urlStr, init);
+            newInit.headers = headers;
+            return originalFetch(urlStr, newInit);
         }
         return originalFetch(input, init);
     };
@@ -116,8 +118,9 @@ const withAuthHeaderInjection = async <T>(
 
 /**
  * Retry wrapper for API calls with Exponential Backoff.
+ * Optimized: Starts with shorter delay (1s) to be more responsive.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 5, initialDelay = 2000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 1000): Promise<T> {
     let currentDelay = initialDelay;
     
     for (let i = 0; i < retries; i++) {
@@ -125,18 +128,18 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, initialDelay = 20
             return await fn();
         } catch (error: any) {
             const msg = error.message || "";
-            const isQuotaError = msg.includes("429") || msg.includes("Quota") || msg.includes("RESOURCE_EXHAUSTED") || error.status === 429;
-            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504") || msg.includes("Overloaded");
+            const isQuotaError = msg.includes("429") || msg.includes("Quota") || msg.includes("RESOURCE_EXHAUSTED") || (error.status === 429);
+            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("Overloaded");
             
+            // If it's the last attempt, throw
             if (i === retries - 1) throw error;
 
             if (isQuotaError || isServerError) {
-                // Exponential backoff: Wait longer each time we fail (2s -> 4s -> 8s -> 16s)
-                // This gives the API time to reset the quota bucket.
                 console.warn(`API Error (${isQuotaError ? '429 Rate Limit' : 'Server'}). Retrying in ${currentDelay}ms... (Attempt ${i + 1}/${retries})`);
                 await delay(currentDelay);
                 currentDelay *= 2; 
             } else {
+                // Throw immediately for other errors (e.g., 400 Bad Request, Auth errors)
                 throw error;
             }
         }
@@ -144,9 +147,6 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, initialDelay = 20
     throw new Error("Retry failed");
 }
 
-/**
- * Creates a configured GoogleGenAI instance.
- */
 const createAIClient = (apiKey: string, baseUrl?: string) => {
     let finalBaseUrl = baseUrl ? baseUrl.trim() : undefined;
     
@@ -167,6 +167,16 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
 };
 
 /**
+ * Shared Safety Settings (Crucial for preventing silent failures)
+ */
+const SAFETY_SETTINGS = [
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
+
+/**
  * Analyzes a video frame.
  */
 export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string, baseUrl?: string): Promise<ShotAnalysis> => {
@@ -174,7 +184,6 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Queue manages concurrency (1 at a time)
   return apiQueue.add(() => withRetry(async () => {
     return withAuthHeaderInjection(apiKey, baseUrl, async () => {
         const ai = createAIClient(apiKey, baseUrl);
@@ -206,6 +215,9 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
             },
             config: {
               responseMimeType: "application/json",
+              // Add safety settings here too! 
+              // Without this, "violent" or "suggestive" movie frames might cause the API to block without a clear 429 error.
+              safetySettings: SAFETY_SETTINGS,
               responseSchema: {
                 type: Type.OBJECT,
                 properties: {
@@ -229,10 +241,10 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
           } catch (e) {
               if (text.trim().startsWith("<")) {
                   const titleMatch = text.match(/<title>(.*?)<\/title>/i);
-                  const title = titleMatch ? titleMatch[1] : "Unknown HTML Error";
+                  const title = titleMatch ? titleMatch[1] : "Unknown HTML Error (Proxy?)";
                   throw new Error(`Proxy Error: ${title}`);
               }
-              throw new Error("JSON Parse Error");
+              throw new Error("无法解析 JSON 响应");
           }
 
         } catch (error: any) {
@@ -241,7 +253,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
           throw new Error("Gemini Request Failed");
         }
     });
-  }, 5, 2000)); // Increase retries to 5, start delay at 2000ms
+  }, 3, 1000));
 };
 
 /**
@@ -252,7 +264,6 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Queue manages concurrency (1 at a time)
   return apiQueue.add(() => withRetry(async () => {
       return withAuthHeaderInjection(apiKey, baseUrl, async () => {
           const ai = createAIClient(apiKey, baseUrl);
@@ -269,13 +280,7 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
                 imageConfig: {
                   aspectRatio: "16:9", 
                 },
-                // Add Safety Settings to BLOCK_NONE to prevent model from refusing prompts
-                safetySettings: [
-                  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                ]
+                safetySettings: SAFETY_SETTINGS // Use shared safety settings
               }
             });
 
@@ -292,7 +297,7 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
             
             if (response.text) {
                 console.warn("Nano Banana returned text instead of image:", response.text);
-                throw new Error("模型拒绝生成图片 (安全拦截)");
+                throw new Error("模型拒绝生成图片 (可能由于安全策略或 Prompt 问题)");
             }
 
             throw new Error("响应中未找到图片数据");
@@ -303,5 +308,5 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
             throw new Error("生成图片失败");
           }
       });
-  }, 3, 2000));
+  }, 3, 1000));
 };
