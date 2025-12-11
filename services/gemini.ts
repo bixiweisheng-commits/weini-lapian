@@ -12,16 +12,16 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Helper to patch window.fetch temporarily to inject headers.
- * Correctly handles proxy authentication schemes (Bearer token).
+ * Adds 'Authorization: Bearer' and 'x-goog-api-key' for proxies that need them.
  */
 const withAuthHeaderInjection = async <T>(
     apiKey: string, 
     baseUrl: string | undefined, 
     fn: () => Promise<T>
 ): Promise<T> => {
-    // Determine if we need to patch:
-    // 1. If using a proxy (baseUrl present)
-    // 2. OR if the key looks like a proxy key (sk-...)
+    // Check if we need to patch.
+    // 1. BaseURL is present (Custom Proxy)
+    // 2. OR Key starts with "sk-" (OpenAI-compatible / Proxy Key)
     const isProxyKey = apiKey.startsWith("sk-");
     const needsPatch = !!baseUrl || isProxyKey;
 
@@ -33,33 +33,31 @@ const withAuthHeaderInjection = async <T>(
     
     // Patch fetch
     window.fetch = async (input, init) => {
-        let urlStr = input.toString();
+        const urlStr = input.toString();
         
-        // Check if this request is destined for our configured Base URL (or Google if no base url but sk- key)
-        const targetBase = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : 'googleapis.com';
+        // Determine if this request is targeting our custom base or google
+        const targetBase = baseUrl ? baseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') : 'googleapis.com';
         
+        // Only modify requests going to our target
         if (urlStr.includes(targetBase)) {
             init = init || {};
             init.headers = new Headers(init.headers);
             
-            // 1. Inject Authorization Header (Standard for Proxies)
-            // Even if it's not a proxy, adding Bearer usually doesn't hurt Google APIs if format is correct,
-            // but for sk- keys it is MANDATORY.
-            init.headers.set("Authorization", `Bearer ${apiKey}`);
+            // Inject Headers - Additive only, do not remove query params.
+            // Many proxies expect the key in the Authorization header.
+            if (!init.headers.has("Authorization")) {
+                init.headers.set("Authorization", `Bearer ${apiKey}`);
+            }
             
-            // 2. Some proxies require the key in x-goog-api-key as well or instead
-            init.headers.set("x-goog-api-key", apiKey);
-            
-            // 3. CLEANUP: Remove 'key' query param if it exists.
-            // The SDK adds ?key=XYZ. 
-            // If we are using a proxy, we don't want the proxy to see ?key=dummy or ?key=sk-xxx in the URL
-            // because sometimes they prioritize URL params over headers and fail validation.
-            if (urlStr.includes("key=")) {
-                const urlObj = new URL(urlStr);
-                urlObj.searchParams.delete("key");
-                urlStr = urlObj.toString();
+            // Also inject x-goog-api-key for compatibility
+            if (!init.headers.has("x-goog-api-key")) {
+                init.headers.set("x-goog-api-key", apiKey);
             }
 
+            // NOTE: We do NOT remove the 'key' query param anymore. 
+            // The SDK adds it automatically (using the real key now).
+            // Removing it caused issues with some proxies that strictly validated the URL param.
+            
             return originalFetch(urlStr, init);
         }
         return originalFetch(input, init);
@@ -84,14 +82,16 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 20
         try {
             return await fn();
         } catch (error: any) {
-            const isQuotaError = error.message?.includes("429") || error.message?.includes("Quota exceeded") || error.status === 429;
-            const isServerError = error.message?.includes("500") || error.message?.includes("502") || error.message?.includes("503");
+            const msg = error.message || "";
+            const isQuotaError = msg.includes("429") || msg.includes("Quota exceeded") || error.status === 429;
+            const isServerError = msg.includes("500") || msg.includes("502") || msg.includes("503");
+            const isLoadError = msg.includes("Failed to fetch") || msg.includes("Load failed");
             
             // If it's the last retry, throw
             if (i === retries - 1) throw error;
 
-            if (isQuotaError || isServerError) {
-                console.warn(`API Error (${isQuotaError ? 'Quota' : 'Server'}). Retrying in ${currentDelay}ms... (Attempt ${i + 1}/${retries})`);
+            if (isQuotaError || isServerError || isLoadError) {
+                console.warn(`API Error (${isQuotaError ? 'Quota' : 'Network/Server'}). Retrying in ${currentDelay}ms... (Attempt ${i + 1}/${retries})`);
                 await delay(currentDelay);
                 currentDelay *= 2; // Exponential backoff
             } else {
@@ -108,11 +108,6 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 20
 const createAIClient = (apiKey: string, baseUrl?: string) => {
     let finalBaseUrl = baseUrl ? baseUrl.trim() : undefined;
     
-    // We use a dummy key for the SDK constructor to prevent it from validating format 
-    // or putting the real sk- key into the URL parameters.
-    // The real key is injected via headers in `withAuthHeaderInjection`.
-    const sdkKey = "dummy_key_managed_by_fetch_patch";
-
     if (finalBaseUrl) {
         if (!/^https?:\/\//i.test(finalBaseUrl)) {
             finalBaseUrl = `https://${finalBaseUrl}`;
@@ -120,12 +115,15 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
         if (finalBaseUrl.endsWith('/')) {
             finalBaseUrl = finalBaseUrl.slice(0, -1);
         }
-        // Remove version suffixes to ensure clean base
+        // Remove version suffixes to ensure clean base - SDK appends version
         finalBaseUrl = finalBaseUrl.replace(/(\/v1beta|\/v1|\/google|\/goog)$/i, '');
     }
 
+    // CRITICAL FIX: Always use the REAL API Key.
+    // Previous usage of dummy key caused standard Google calls to fail auth,
+    // and caused proxies to fail if they validated the `key` query param.
     return new GoogleGenAI({ 
-        apiKey: sdkKey, 
+        apiKey: apiKey, 
         baseUrl: finalBaseUrl 
     });
 };
@@ -204,6 +202,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
           }
 
         } catch (error: any) {
+          console.error("Gemini Analysis Error:", error);
           if (error.message) throw error;
           throw new Error("Gemini Request Failed");
         }
