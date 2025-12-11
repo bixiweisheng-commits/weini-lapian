@@ -14,10 +14,24 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
     // However, the SDK requires apiKey to be a string.
     const effectiveKey = apiKey || "dummy_key_for_proxy";
     
-    // Ensure baseUrl doesn't have a trailing slash, as the SDK might append pathing
     let finalBaseUrl = baseUrl ? baseUrl.trim() : undefined;
-    if (finalBaseUrl && finalBaseUrl.endsWith('/')) {
-        finalBaseUrl = finalBaseUrl.slice(0, -1);
+    
+    if (finalBaseUrl) {
+        // 1. Ensure protocol exists
+        if (!/^https?:\/\//i.test(finalBaseUrl)) {
+            finalBaseUrl = `https://${finalBaseUrl}`;
+        }
+
+        // 2. Remove trailing slash
+        if (finalBaseUrl.endsWith('/')) {
+            finalBaseUrl = finalBaseUrl.slice(0, -1);
+        }
+
+        // 3. Smart clean: Remove common API version suffixes that SDK adds automatically.
+        // The SDK appends /v1beta (or similar) itself.
+        // If user provides 'https://api.proxy.com/v1', we strip it to avoid 'https://api.proxy.com/v1/v1beta'.
+        // We strip /v1, /v1beta, /google, /goog if they are at the end.
+        finalBaseUrl = finalBaseUrl.replace(/(\/v1beta|\/v1|\/google|\/goog)$/i, '');
     }
 
     return new GoogleGenAI({ 
@@ -32,7 +46,7 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
 export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string, baseUrl?: string): Promise<ShotAnalysis> => {
   // We strictly require either a key OR a baseurl to attempt a request
   if (!apiKey && !baseUrl) {
-    throw new Error("API Settings Missing");
+    throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
   const ai = createAIClient(apiKey, baseUrl);
@@ -82,7 +96,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
     });
 
     const text = response.text;
-    if (!text) throw new Error("No response text from Gemini");
+    if (!text) throw new Error("API 返回内容为空");
 
     try {
         return JSON.parse(text) as ShotAnalysis;
@@ -90,14 +104,18 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
         console.error("JSON Parse Error. Raw text received:", text);
         // If the text looks like HTML (common with proxy errors), throw a descriptive error
         if (text.trim().startsWith("<")) {
-            throw new Error(`Proxy returned HTML instead of JSON. Check Base URL. First 50 chars: ${text.substring(0, 50)}...`);
+            throw new Error(`代理服务返回了 HTML (可能是 404/502 错误)。请检查 Base URL 是否正确。收到的内容: ${text.substring(0, 30)}...`);
         }
-        throw new Error("Failed to parse API response as JSON.");
+        throw new Error("无法解析 API 返回的 JSON 数据。");
     }
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini Analysis Error:", error);
-    throw error;
+    // Pass through specific error messages
+    if (error.message) {
+        throw error;
+    }
+    throw new Error("未知错误，请检查控制台");
   }
 };
 
@@ -106,7 +124,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
  */
 export const generateImageWithNanoBanana = async (prompt: string, apiKey: string, baseUrl?: string): Promise<string> => {
   if (!apiKey && !baseUrl) {
-    throw new Error("API Settings Missing");
+    throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
   const ai = createAIClient(apiKey, baseUrl);
@@ -135,10 +153,11 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
       }
     }
 
-    throw new Error("No image data found in response");
+    throw new Error("响应中未找到图片数据");
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Nano Banana Generation Error:", error);
-    throw error;
+    if (error.message) throw error;
+    throw new Error("生成图片失败");
   }
 };

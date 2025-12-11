@@ -115,9 +115,12 @@ const App: React.FC = () => {
         ));
       } catch (error: any) {
         console.error("Analysis failed:", error);
+        // Show specific error message
+        const errorMessage = error instanceof Error ? error.message : "请求失败，请检查 Base URL";
+        
         setShots(prev => prev.map(s => 
           s.id === shotId 
-            ? { ...s, isAnalyzing: false, error: "API 请求失败，请检查设置 (Base URL/Key)" } 
+            ? { ...s, isAnalyzing: false, error: errorMessage } 
             : s
         ));
       }
@@ -143,9 +146,10 @@ const App: React.FC = () => {
       setShots(prev => prev.map(s => 
         s.id === shotId ? { ...s, isGeneratingImage: false, generatedImage: generatedImageBase64 } : s
       ));
-    } catch (error) {
+    } catch (error: any) {
+       const errorMessage = error instanceof Error ? error.message : "生成失败";
        setShots(prev => prev.map(s => 
-        s.id === shotId ? { ...s, isGeneratingImage: false, error: "Image generation failed." } : s
+        s.id === shotId ? { ...s, isGeneratingImage: false, error: errorMessage } : s
       ));
     }
   };
@@ -289,11 +293,11 @@ const App: React.FC = () => {
                   type="text"
                   value={tempBaseUrl}
                   onChange={(e) => setTempBaseUrl(e.target.value)}
-                  placeholder="https://your-proxy.com (可选)"
+                  placeholder="https://your-proxy.com (自动移除 /v1beta)"
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
                 />
                  <p className="text-[10px] text-gray-500 mt-1">
-                   如使用第三方中转(如APIFox/API基站)，请填入 Base URL。
+                   推荐填入中转站的域名根目录(如 https://api.xyz.com)，程序会自动处理版本号。
                  </p>
               </div>
 
