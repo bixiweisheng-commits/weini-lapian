@@ -46,8 +46,6 @@ const App: React.FC = () => {
     }
 
     // Logic: If user provides Base URL but no Key, we save a placeholder key
-    // because the logic elsewhere checks "if (!apiKey) showSettings"
-    // and the SDK requires *some* string as a key.
     const finalKey = keyToSave || (urlToSave ? "custom_proxy_mode" : "");
 
     if (finalKey) {
@@ -90,7 +88,6 @@ const App: React.FC = () => {
     let msg = error instanceof Error ? error.message : "请求失败";
     
     // Attempt to parse Google JSON error if present in message
-    // Format usually: "[400 Bad Request] {...json...}" or just "{...json...}"
     try {
       const jsonMatch = msg.match(/\{.*"error":.*\}/s);
       if (jsonMatch) {
@@ -104,7 +101,7 @@ const App: React.FC = () => {
     }
     
     if (msg.includes("API key not valid")) {
-        return "API Key 无效。如果是中转 Key (sk-...)，请确保填写了正确的 Base URL。";
+        return "Key 无效。程序已自动尝试使用 Bearer 验证。请检查 Base URL 是否正确 (一般只需填域名)。";
     }
 
     return msg;
@@ -307,7 +304,7 @@ const App: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-xl font-bold text-white">配置 API 设置</h3>
-                <p className="text-xs text-gray-400">兼容官方 API 及第三方中转服务</p>
+                <p className="text-xs text-gray-400">兼容官方 API 及第三方中转服务 (支持 sk- keys)</p>
               </div>
             </div>
 
@@ -320,7 +317,7 @@ const App: React.FC = () => {
                   type="text"
                   value={tempBaseUrl}
                   onChange={(e) => setTempBaseUrl(e.target.value)}
-                  placeholder="https://your-proxy.com (自动移除 /v1beta)"
+                  placeholder="https://your-proxy.com"
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
                 />
                  <p className="text-[10px] text-gray-500 mt-1">
@@ -340,7 +337,7 @@ const App: React.FC = () => {
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
                 />
                  <p className="text-[10px] text-gray-500 mt-1">
-                   在此处填入您的密钥 (sk-... 或 AIza...)。
+                   在此处填入您的密钥 (sk-... 或 AIza...)。系统会自动处理认证格式。
                  </p>
               </div>
 
