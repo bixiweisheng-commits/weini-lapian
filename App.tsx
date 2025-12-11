@@ -3,38 +3,68 @@ import { VideoUploader } from './components/VideoUploader';
 import { ShotList } from './components/ShotList';
 import { Shot } from './types';
 import { analyzeFrameWithGemini, generateImageWithNanoBanana } from './services/gemini';
-import { Clapperboard, Settings, Key, X, Save } from 'lucide-react';
+import { exportToWord } from './services/export';
+import { Clapperboard, Settings, Key, X, Save, Download, FileText, Printer, ChevronDown } from 'lucide-react';
 
 const App: React.FC = () => {
   const [shots, setShots] = useState<Shot[]>([]);
   
   // API Key Management State
-  // Priority: 1. Environment Variable 2. Local Storage
   const [apiKey, setApiKey] = useState<string>(() => {
     return process.env.API_KEY || localStorage.getItem('huanxi_api_key') || '';
   });
+  const [baseUrl, setBaseUrl] = useState<string>(() => {
+    return localStorage.getItem('huanxi_base_url') || '';
+  });
+  
   const [showSettings, setShowSettings] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  
   const [tempKey, setTempKey] = useState('');
+  const [tempBaseUrl, setTempBaseUrl] = useState('');
 
   useEffect(() => {
-    // If no key exists on mount, show settings
     if (!apiKey) {
       setShowSettings(true);
     }
   }, [apiKey]);
 
-  const handleSaveKey = () => {
+  const handleSaveSettings = () => {
     if (tempKey.trim()) {
       localStorage.setItem('huanxi_api_key', tempKey.trim());
       setApiKey(tempKey.trim());
-      setShowSettings(false);
     }
+    
+    // Allow empty base url (resets to default)
+    localStorage.setItem('huanxi_base_url', tempBaseUrl.trim());
+    setBaseUrl(tempBaseUrl.trim());
+    
+    setShowSettings(false);
   };
 
   const handleClearKey = () => {
     localStorage.removeItem('huanxi_api_key');
+    localStorage.removeItem('huanxi_base_url');
     setApiKey(process.env.API_KEY || '');
+    setBaseUrl('');
     setTempKey('');
+    setTempBaseUrl('');
+  };
+
+  const openSettings = () => {
+    setTempKey(apiKey);
+    setTempBaseUrl(baseUrl);
+    setShowSettings(true);
+  };
+
+  const handleExportWord = async () => {
+    setShowExportMenu(false);
+    await exportToWord(shots);
+  };
+
+  const handlePrintPDF = () => {
+    setShowExportMenu(false);
+    window.print();
   };
 
   const handleFramesExtracted = useCallback(async (frames: { time: number; image: string }[]) => {
@@ -43,9 +73,7 @@ const App: React.FC = () => {
       return;
     }
 
-    // Initialize shots with calculated duration
     const newShots: Shot[] = frames.map((frame, index) => {
-      // Calculate duration: time difference to next frame, or default 3s for last frame
       const nextTime = frames[index + 1] ? frames[index + 1].time : frame.time + 3;
       const duration = Math.round((nextTime - frame.time) * 10) / 10;
 
@@ -61,12 +89,11 @@ const App: React.FC = () => {
 
     setShots(newShots);
     
-    // Process frames individually
     frames.forEach(async (frame, index) => {
       const shotId = newShots[index].id;
       
       try {
-        const analysis = await analyzeFrameWithGemini(frame.image, apiKey);
+        const analysis = await analyzeFrameWithGemini(frame.image, apiKey, baseUrl);
         
         setShots(prev => prev.map(s => 
           s.id === shotId 
@@ -76,12 +103,12 @@ const App: React.FC = () => {
       } catch (error) {
         setShots(prev => prev.map(s => 
           s.id === shotId 
-            ? { ...s, isAnalyzing: false, error: "Analysis failed. Check API Key." } 
+            ? { ...s, isAnalyzing: false, error: "Analysis failed. Check API Settings." } 
             : s
         ));
       }
     });
-  }, [apiKey]);
+  }, [apiKey, baseUrl]);
 
   const handleGenerateImage = async (shotId: string) => {
     if (!apiKey) {
@@ -97,7 +124,7 @@ const App: React.FC = () => {
     ));
 
     try {
-      const generatedImageBase64 = await generateImageWithNanoBanana(shot.analysis.aiPrompt, apiKey);
+      const generatedImageBase64 = await generateImageWithNanoBanana(shot.analysis.aiPrompt, apiKey, baseUrl);
       
       setShots(prev => prev.map(s => 
         s.id === shotId ? { ...s, isGeneratingImage: false, generatedImage: generatedImageBase64 } : s
@@ -110,10 +137,10 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30">
+    <div className="min-h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 print:bg-white print:text-black">
       
       {/* Header */}
-      <header className="border-b border-gray-800 bg-gray-900/95 sticky top-0 z-50 backdrop-blur-sm">
+      <header className="border-b border-gray-800 bg-gray-900/95 sticky top-0 z-50 backdrop-blur-sm print:hidden">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-blue-600 p-2 rounded-lg">
@@ -123,14 +150,53 @@ const App: React.FC = () => {
               欢玺AI <span className="text-xs font-medium text-gray-500 ml-2 border border-gray-700 px-2 py-0.5 rounded-full">Nano Banana Edition</span>
             </h1>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="hidden md:block text-xs text-gray-500">
-              Powered by Gemini 2.5
-            </div>
+          <div className="flex items-center gap-3">
+            {shots.length > 0 && (
+              <div className="relative">
+                <button 
+                  onClick={() => setShowExportMenu(!showExportMenu)}
+                  className="flex items-center gap-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors border border-gray-700"
+                >
+                  <Download className="w-4 h-4 text-green-400" />
+                  导出报告
+                  <ChevronDown className="w-3 h-3 text-gray-400" />
+                </button>
+                
+                {showExportMenu && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 animate-[fadeIn_0.1s_ease-out]">
+                    <button 
+                      onClick={handleExportWord}
+                      className="w-full text-left px-4 py-3 hover:bg-gray-700 flex items-center gap-2 text-sm text-gray-200"
+                    >
+                      <FileText className="w-4 h-4 text-blue-400" />
+                      导出 Word (.docx)
+                    </button>
+                    <button 
+                      onClick={handlePrintPDF}
+                      className="w-full text-left px-4 py-3 hover:bg-gray-700 flex items-center gap-2 text-sm text-gray-200 border-t border-gray-700"
+                    >
+                      <Printer className="w-4 h-4 text-purple-400" />
+                      打印 / 另存为 PDF
+                    </button>
+                  </div>
+                )}
+                
+                {/* Backdrop to close menu */}
+                {showExportMenu && (
+                  <div 
+                    className="fixed inset-0 z-40 bg-transparent" 
+                    onClick={() => setShowExportMenu(false)}
+                  />
+                )}
+              </div>
+            )}
+
+            <div className="h-6 w-px bg-gray-700 mx-1"></div>
+
             <button 
-              onClick={() => { setTempKey(apiKey); setShowSettings(true); }}
+              onClick={openSettings}
               className="p-2 hover:bg-gray-800 rounded-full transition-colors text-gray-400 hover:text-white"
-              title="设置 API Key"
+              title="设置 API Key & Base URL"
             >
               <Settings className="w-5 h-5" />
             </button>
@@ -158,7 +224,7 @@ const App: React.FC = () => {
           </div>
         ) : (
           <div className="animate-[slideUp_0.5s_ease-out]">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex justify-between items-center mb-6 no-print">
               <button 
                 onClick={() => setShots([])}
                 className="text-gray-400 hover:text-white flex items-center gap-2 px-4 py-2 hover:bg-gray-800 rounded-lg transition-colors"
@@ -173,7 +239,7 @@ const App: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-gray-800 mt-20 py-8 text-center text-gray-600 text-sm">
+      <footer className="border-t border-gray-800 mt-20 py-8 text-center text-gray-600 text-sm print:hidden">
         <p>© 2025 Huanxi AI. All rights reserved.</p>
       </footer>
 
@@ -193,15 +259,15 @@ const App: React.FC = () => {
                 <Key className="w-6 h-6 text-purple-400" />
               </div>
               <div>
-                <h3 className="text-xl font-bold text-white">配置 API Key</h3>
-                <p className="text-xs text-gray-400">使用您的 Google Gemini Key 以启用功能</p>
+                <h3 className="text-xl font-bold text-white">配置 API 设置</h3>
+                <p className="text-xs text-gray-400">设置 Key 和 代理地址 (可选)</p>
               </div>
             </div>
 
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Google GenAI API Key
+                  API Key
                 </label>
                 <input
                   type="password"
@@ -212,11 +278,20 @@ const App: React.FC = () => {
                 />
               </div>
 
-              <div className="text-xs text-gray-500 leading-relaxed">
-                您的 Key 将仅存储在本地浏览器中（LocalStorage），直接与 Google 服务器通信，不会经过任何第三方服务器。
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-purple-400 hover:text-purple-300 ml-1 underline">
-                  获取免费 Key &rarr;
-                </a>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Base URL (API 代理地址)
+                </label>
+                <input
+                  type="text"
+                  value={tempBaseUrl}
+                  onChange={(e) => setTempBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1 (留空则使用默认)"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
+                />
+                 <p className="text-[10px] text-gray-500 mt-1">
+                   如使用国内中转(如API基站)，请填入 Base URL。通常不带 /v1beta 等后缀。
+                 </p>
               </div>
 
               <div className="flex gap-3 pt-2">
@@ -225,11 +300,11 @@ const App: React.FC = () => {
                     onClick={handleClearKey}
                     className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors"
                   >
-                    清除旧 Key
+                    重置
                   </button>
                 )}
                 <button
-                  onClick={handleSaveKey}
+                  onClick={handleSaveSettings}
                   disabled={!tempKey.trim()}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-purple-900/20"
                 >

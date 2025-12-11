@@ -22,6 +22,39 @@
       ::-webkit-scrollbar-thumb:hover {
         background: #6b7280;
       }
+
+      /* Print Styles for PDF Export */
+      @media print {
+        body {
+          background-color: white !important;
+          color: black !important;
+        }
+        #root {
+          background-color: white !important;
+        }
+        /* Hide UI elements during print */
+        header, button, .no-print {
+          display: none !important;
+        }
+        /* Layout for print */
+        .shot-card-print {
+          break-inside: avoid;
+          page-break-inside: avoid;
+          border: 1px solid #ddd;
+          margin-bottom: 20px;
+          display: block !important;
+          background: white !important;
+          color: black !important;
+          box-shadow: none !important;
+        }
+        .text-gray-300, .text-gray-400, .text-gray-500 {
+          color: #333 !important;
+        }
+        .text-blue-200, .text-purple-400 {
+          color: #000 !important;
+          font-weight: bold;
+        }
+      }
     </style>
   <script type="importmap">
 {
@@ -30,7 +63,9 @@
     "lucide-react": "https://esm.sh/lucide-react@^0.559.0",
     "react/": "https://esm.sh/react@^19.2.1/",
     "react": "https://esm.sh/react@^19.2.1",
-    "@google/genai": "https://esm.sh/@google/genai@^1.32.0"
+    "@google/genai": "https://esm.sh/@google/genai@^1.32.0",
+    "docx": "https://esm.sh/docx@8.5.0",
+    "file-saver": "https://esm.sh/file-saver@2.0.5"
   }
 }
 </script>

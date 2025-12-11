@@ -8,12 +8,12 @@ const MODEL_IMAGE_GEN = 'gemini-2.5-flash-image'; // Nano Banana
 /**
  * Analyzes a video frame to extract filmmaking notes and an image prompt.
  */
-export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string): Promise<ShotAnalysis> => {
+export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string, baseUrl?: string): Promise<ShotAnalysis> => {
   if (!apiKey) {
     throw new Error("API Key is missing. Please configure it in settings.");
   }
 
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey, baseUrl });
 
   // Clean base64 string if it contains metadata
   const cleanBase64 = base64Image.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
@@ -73,12 +73,12 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
 /**
  * Generates an image using the "Nano Banana" model based on a prompt.
  */
-export const generateImageWithNanoBanana = async (prompt: string, apiKey: string): Promise<string> => {
+export const generateImageWithNanoBanana = async (prompt: string, apiKey: string, baseUrl?: string): Promise<string> => {
   if (!apiKey) {
     throw new Error("API Key is missing. Please configure it in settings.");
   }
 
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey, baseUrl });
 
   try {
     const response = await ai.models.generateContent({
