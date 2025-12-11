@@ -1,13 +1,14 @@
 import React from 'react';
 import { Shot } from '../types';
-import { Zap, AlertCircle, Image as ImageIcon, Film, Loader2, Maximize, Video, Palette, Music, Clock, Download } from 'lucide-react';
+import { Zap, AlertCircle, Image as ImageIcon, Film, Loader2, Maximize, Video, Palette, Music, Clock, Download, RefreshCw } from 'lucide-react';
 
 interface ShotListProps {
   shots: Shot[];
   onGenerateImage: (shotId: string) => void;
+  onRetryAnalysis: (shotId: string) => void;
 }
 
-export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage }) => {
+export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage, onRetryAnalysis }) => {
   if (shots.length === 0) return null;
 
   return (
@@ -25,6 +26,7 @@ export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage }) =>
             <ShotCard 
               shot={shot} 
               onGenerateImage={() => onGenerateImage(shot.id)} 
+              onRetryAnalysis={() => onRetryAnalysis(shot.id)}
             />
           </div>
         ))}
@@ -36,9 +38,10 @@ export const ShotList: React.FC<ShotListProps> = ({ shots, onGenerateImage }) =>
 interface ShotCardProps {
   shot: Shot;
   onGenerateImage: () => void;
+  onRetryAnalysis: () => void;
 }
 
-const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage }) => {
+const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage, onRetryAnalysis }) => {
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
@@ -108,6 +111,20 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage }) => {
                 <Loader2 className="w-8 h-8 animate-spin" />
                 <span className="text-sm font-medium">Nano Banana 正在绘制分镜...</span>
               </div>
+            ) : shot.imageGenError ? (
+                <div className="flex flex-col items-center gap-3 text-red-400 p-2 text-center w-full">
+                    <div className="flex items-center gap-2">
+                         <AlertCircle className="w-5 h-5" />
+                         <span className="text-sm font-bold">生图失败</span>
+                    </div>
+                    <span className="text-xs text-gray-400 break-words w-full px-2">{shot.imageGenError}</span>
+                    <button 
+                        onClick={onGenerateImage}
+                        className="mt-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded border border-gray-600 flex items-center gap-1 transition-colors"
+                    >
+                        <RefreshCw className="w-3 h-3" /> 重试生图
+                    </button>
+                </div>
             ) : shot.analysis ? (
               <button
                 onClick={onGenerateImage}
@@ -127,15 +144,25 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage }) => {
 
       {/* Info Column */}
       <div className="flex-1 p-6 flex flex-col print:p-4">
-        {shot.isAnalyzing ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-gray-400 space-y-3 min-h-[300px]">
-            <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-            <p>Gemini 正在逐帧拉片分析...</p>
+        {shot.status === 'analyzing' ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-blue-400 space-y-3 min-h-[300px]">
+            <Loader2 className="w-8 h-8 animate-spin" />
+            <p>Gemini 正在分析此镜头...</p>
           </div>
-        ) : shot.error ? (
-          <div className="flex-1 flex items-center justify-center text-red-400 gap-2 min-h-[300px]">
-            <AlertCircle className="w-5 h-5" />
-            <p>分析失败: {shot.error}</p>
+        ) : shot.status === 'failed' ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-red-400 gap-4 min-h-[300px] p-4 text-center">
+            <div className="flex items-center gap-2 text-lg font-medium">
+                <AlertCircle className="w-6 h-6" />
+                分析失败
+            </div>
+            <p className="text-sm text-gray-500 break-all max-w-md">{shot.error}</p>
+            <button 
+                onClick={onRetryAnalysis}
+                className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors shadow-lg border border-gray-600"
+            >
+                <RefreshCw className="w-4 h-4" />
+                重新分析
+            </button>
           </div>
         ) : shot.analysis ? (
           <div className="space-y-6 print:space-y-4">
@@ -206,7 +233,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, onGenerateImage }) => {
             </div>
 
             {/* Action Bar */}
-            {!shot.generatedImage && !shot.isGeneratingImage && (
+            {!shot.generatedImage && !shot.isGeneratingImage && !shot.imageGenError && (
               <div className="flex justify-end no-print">
                 <button
                   onClick={onGenerateImage}

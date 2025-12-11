@@ -12,11 +12,16 @@ export interface Shot {
   timestamp: number; // Time in seconds
   duration: number; // Duration of the shot in seconds
   originalImage: string; // Base64 data URI
-  isAnalyzing: boolean;
+  
+  // Status management
+  status: 'pending' | 'analyzing' | 'completed' | 'failed';
+  
+  isGeneratingImage: boolean; // For Nano Banana generation
+  
   analysis?: ShotAnalysis;
-  isGeneratingImage: boolean;
   generatedImage?: string; // Base64 data URI from Nano Banana
-  error?: string;
+  error?: string; // Analysis error
+  imageGenError?: string; // Image generation error
 }
 
 export enum AppState {
