@@ -4,7 +4,7 @@ import { ShotList } from './components/ShotList';
 import { Shot } from './types';
 import { analyzeFrameWithGemini, generateImageWithNanoBanana } from './services/gemini';
 import { exportToWord } from './services/export';
-import { Clapperboard, Settings, Key, X, Save, Download, FileText, Printer, ChevronDown } from 'lucide-react';
+import { Clapperboard, Settings, Key, X, Save, Download, FileText, Printer, ChevronDown, Globe } from 'lucide-react';
 
 const App: React.FC = () => {
   const [shots, setShots] = useState<Shot[]>([]);
@@ -24,20 +24,33 @@ const App: React.FC = () => {
   const [tempBaseUrl, setTempBaseUrl] = useState('');
 
   useEffect(() => {
-    if (!apiKey) {
+    // If we have neither env key nor stored key, show settings
+    // But if we have a stored Base URL but no Key (Proxy mode), that's fine too.
+    const storedKey = localStorage.getItem('huanxi_api_key');
+    const storedBaseUrl = localStorage.getItem('huanxi_base_url');
+    const envKey = process.env.API_KEY;
+
+    if (!envKey && !storedKey && !storedBaseUrl) {
       setShowSettings(true);
     }
-  }, [apiKey]);
+  }, []);
 
   const handleSaveSettings = () => {
-    if (tempKey.trim()) {
-      localStorage.setItem('huanxi_api_key', tempKey.trim());
-      setApiKey(tempKey.trim());
+    const keyToSave = tempKey.trim();
+    const urlToSave = tempBaseUrl.trim();
+
+    // Logic: If user provides Base URL but no Key, we save a placeholder key
+    // because the logic elsewhere checks "if (!apiKey) showSettings"
+    // and the SDK requires *some* string as a key.
+    const finalKey = keyToSave || (urlToSave ? "custom_proxy_mode" : "");
+
+    if (finalKey) {
+      localStorage.setItem('huanxi_api_key', finalKey);
+      setApiKey(finalKey);
     }
     
-    // Allow empty base url (resets to default)
-    localStorage.setItem('huanxi_base_url', tempBaseUrl.trim());
-    setBaseUrl(tempBaseUrl.trim());
+    localStorage.setItem('huanxi_base_url', urlToSave);
+    setBaseUrl(urlToSave);
     
     setShowSettings(false);
   };
@@ -52,7 +65,7 @@ const App: React.FC = () => {
   };
 
   const openSettings = () => {
-    setTempKey(apiKey);
+    setTempKey(apiKey === "custom_proxy_mode" ? "" : apiKey);
     setTempBaseUrl(baseUrl);
     setShowSettings(true);
   };
@@ -68,7 +81,7 @@ const App: React.FC = () => {
   };
 
   const handleFramesExtracted = useCallback(async (frames: { time: number; image: string }[]) => {
-    if (!apiKey) {
+    if (!apiKey && !baseUrl) {
       setShowSettings(true);
       return;
     }
@@ -100,10 +113,11 @@ const App: React.FC = () => {
             ? { ...s, isAnalyzing: false, analysis } 
             : s
         ));
-      } catch (error) {
+      } catch (error: any) {
+        console.error("Analysis failed:", error);
         setShots(prev => prev.map(s => 
           s.id === shotId 
-            ? { ...s, isAnalyzing: false, error: "Analysis failed. Check API Settings." } 
+            ? { ...s, isAnalyzing: false, error: "API 请求失败，请检查设置 (Base URL/Key)" } 
             : s
         ));
       }
@@ -111,7 +125,7 @@ const App: React.FC = () => {
   }, [apiKey, baseUrl]);
 
   const handleGenerateImage = async (shotId: string) => {
-    if (!apiKey) {
+    if (!apiKey && !baseUrl) {
       setShowSettings(true);
       return;
     }
@@ -135,6 +149,8 @@ const App: React.FC = () => {
       ));
     }
   };
+
+  const isSaveDisabled = !tempKey.trim() && !tempBaseUrl.trim();
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 print:bg-white print:text-black">
@@ -256,28 +272,15 @@ const App: React.FC = () => {
 
             <div className="flex items-center gap-3 mb-6">
               <div className="bg-purple-600/20 p-3 rounded-lg">
-                <Key className="w-6 h-6 text-purple-400" />
+                <Globe className="w-6 h-6 text-purple-400" />
               </div>
               <div>
                 <h3 className="text-xl font-bold text-white">配置 API 设置</h3>
-                <p className="text-xs text-gray-400">设置 Key 和 代理地址 (可选)</p>
+                <p className="text-xs text-gray-400">兼容官方 API 及第三方中转服务</p>
               </div>
             </div>
 
             <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  API Key
-                </label>
-                <input
-                  type="password"
-                  value={tempKey}
-                  onChange={(e) => setTempKey(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
-                />
-              </div>
-
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">
                   Base URL (API 代理地址)
@@ -286,16 +289,32 @@ const App: React.FC = () => {
                   type="text"
                   value={tempBaseUrl}
                   onChange={(e) => setTempBaseUrl(e.target.value)}
-                  placeholder="https://api.openai.com/v1 (留空则使用默认)"
+                  placeholder="https://your-proxy.com (可选)"
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
                 />
                  <p className="text-[10px] text-gray-500 mt-1">
-                   如使用国内中转(如API基站)，请填入 Base URL。通常不带 /v1beta 等后缀。
+                   如使用第三方中转(如APIFox/API基站)，请填入 Base URL。
+                 </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  API Key / Proxy Key
+                </label>
+                <input
+                  type="password"
+                  value={tempKey}
+                  onChange={(e) => setTempKey(e.target.value)}
+                  placeholder={tempBaseUrl ? "如代理不需Key，可留空" : "AIzaSy..."}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
+                />
+                 <p className="text-[10px] text-gray-500 mt-1">
+                   如果使用了代理地址且代理支持免Key，此处可不填或随意填写。
                  </p>
               </div>
 
               <div className="flex gap-3 pt-2">
-                {localStorage.getItem('huanxi_api_key') && (
+                {(localStorage.getItem('huanxi_api_key') || localStorage.getItem('huanxi_base_url')) && (
                    <button
                     onClick={handleClearKey}
                     className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors"
@@ -305,7 +324,7 @@ const App: React.FC = () => {
                 )}
                 <button
                   onClick={handleSaveSettings}
-                  disabled={!tempKey.trim()}
+                  disabled={isSaveDisabled}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-purple-900/20"
                 >
                   <Save className="w-4 h-4" />

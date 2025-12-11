@@ -6,14 +6,36 @@ const MODEL_ANALYSIS = 'gemini-2.5-flash';
 const MODEL_IMAGE_GEN = 'gemini-2.5-flash-image'; // Nano Banana
 
 /**
+ * Creates a configured GoogleGenAI instance.
+ * Automatically handles proxy-specific logic (stripping trailing slash, using dummy key if needed).
+ */
+const createAIClient = (apiKey: string, baseUrl?: string) => {
+    // If baseUrl is provided, the apiKey can sometimes be empty or dummy in certain proxy setups.
+    // However, the SDK requires apiKey to be a string.
+    const effectiveKey = apiKey || "dummy_key_for_proxy";
+    
+    // Ensure baseUrl doesn't have a trailing slash, as the SDK might append pathing
+    let finalBaseUrl = baseUrl ? baseUrl.trim() : undefined;
+    if (finalBaseUrl && finalBaseUrl.endsWith('/')) {
+        finalBaseUrl = finalBaseUrl.slice(0, -1);
+    }
+
+    return new GoogleGenAI({ 
+        apiKey: effectiveKey, 
+        baseUrl: finalBaseUrl 
+    });
+};
+
+/**
  * Analyzes a video frame to extract filmmaking notes and an image prompt.
  */
 export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string, baseUrl?: string): Promise<ShotAnalysis> => {
-  if (!apiKey) {
-    throw new Error("API Key is missing. Please configure it in settings.");
+  // We strictly require either a key OR a baseurl to attempt a request
+  if (!apiKey && !baseUrl) {
+    throw new Error("API Settings Missing");
   }
 
-  const ai = new GoogleGenAI({ apiKey, baseUrl });
+  const ai = createAIClient(apiKey, baseUrl);
 
   // Clean base64 string if it contains metadata
   const cleanBase64 = base64Image.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, "");
@@ -60,9 +82,18 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
     });
 
     const text = response.text;
-    if (!text) throw new Error("No response from Gemini");
+    if (!text) throw new Error("No response text from Gemini");
 
-    return JSON.parse(text) as ShotAnalysis;
+    try {
+        return JSON.parse(text) as ShotAnalysis;
+    } catch (e) {
+        console.error("JSON Parse Error. Raw text received:", text);
+        // If the text looks like HTML (common with proxy errors), throw a descriptive error
+        if (text.trim().startsWith("<")) {
+            throw new Error(`Proxy returned HTML instead of JSON. Check Base URL. First 50 chars: ${text.substring(0, 50)}...`);
+        }
+        throw new Error("Failed to parse API response as JSON.");
+    }
 
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
@@ -74,11 +105,11 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
  * Generates an image using the "Nano Banana" model based on a prompt.
  */
 export const generateImageWithNanoBanana = async (prompt: string, apiKey: string, baseUrl?: string): Promise<string> => {
-  if (!apiKey) {
-    throw new Error("API Key is missing. Please configure it in settings.");
+  if (!apiKey && !baseUrl) {
+    throw new Error("API Settings Missing");
   }
 
-  const ai = new GoogleGenAI({ apiKey, baseUrl });
+  const ai = createAIClient(apiKey, baseUrl);
 
   try {
     const response = await ai.models.generateContent({
