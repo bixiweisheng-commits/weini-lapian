@@ -6,16 +6,19 @@ const MODEL_ANALYSIS = 'gemini-2.5-flash';
 const MODEL_IMAGE_GEN = 'gemini-2.5-flash-image'; // Nano Banana
 
 /**
- * Concurrency Queue Manager (High Speed Mode)
- * Limits simultaneous requests simply to manage network load, but does not block globally on errors.
+ * Concurrency Queue Manager (Stable Mode)
+ * Limits simultaneous requests to avoid 429 Rate Limit errors.
+ * Now includes a delay between requests to be gentle on the API.
  */
 class RequestQueue {
   private concurrency: number;
   private active: number;
   private queue: Array<() => void>;
+  private timeBetweenRequests: number;
 
-  constructor(concurrency: number) {
+  constructor(concurrency: number, timeBetweenRequests: number = 2000) {
     this.concurrency = concurrency;
+    this.timeBetweenRequests = timeBetweenRequests;
     this.active = 0;
     this.queue = [];
   }
@@ -31,7 +34,10 @@ class RequestQueue {
           reject(err);
         } finally {
           this.active--;
-          this.next();
+          // Add a delay before processing the next item in queue to recover rate limit quota
+          setTimeout(() => {
+              this.next();
+          }, this.timeBetweenRequests);
         }
       };
 
@@ -51,8 +57,9 @@ class RequestQueue {
   }
 }
 
-// Concurrency increased to 5 for maximum speed as requested.
-const apiQueue = new RequestQueue(5);
+// Concurrency set to 1 for maximum stability.
+// Added 1500ms delay between successful requests to prevent burst limits.
+const apiQueue = new RequestQueue(1, 1500);
 
 /**
  * Utility: Wait for a specified duration (ms)
@@ -108,9 +115,9 @@ const withAuthHeaderInjection = async <T>(
 };
 
 /**
- * Retry wrapper for API calls.
+ * Retry wrapper for API calls with Exponential Backoff.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 1000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 5, initialDelay = 2000): Promise<T> {
     let currentDelay = initialDelay;
     
     for (let i = 0; i < retries; i++) {
@@ -124,11 +131,11 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 10
             if (i === retries - 1) throw error;
 
             if (isQuotaError || isServerError) {
-                // Linear backoff instead of exponential to retry faster
-                const waitTime = currentDelay; 
-                console.warn(`API Error (${isQuotaError ? '429' : 'Server'}). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${retries})`);
-                await delay(waitTime);
-                // currentDelay *= 1.5; // Removed exponential increase for speed
+                // Exponential backoff: Wait longer each time we fail (2s -> 4s -> 8s -> 16s)
+                // This gives the API time to reset the quota bucket.
+                console.warn(`API Error (${isQuotaError ? '429 Rate Limit' : 'Server'}). Retrying in ${currentDelay}ms... (Attempt ${i + 1}/${retries})`);
+                await delay(currentDelay);
+                currentDelay *= 2; 
             } else {
                 throw error;
             }
@@ -167,7 +174,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Queue manages concurrency (5)
+  // Queue manages concurrency (1 at a time)
   return apiQueue.add(() => withRetry(async () => {
     return withAuthHeaderInjection(apiKey, baseUrl, async () => {
         const ai = createAIClient(apiKey, baseUrl);
@@ -234,7 +241,7 @@ export const analyzeFrameWithGemini = async (base64Image: string, apiKey: string
           throw new Error("Gemini Request Failed");
         }
     });
-  }, 3, 1000));
+  }, 5, 2000)); // Increase retries to 5, start delay at 2000ms
 };
 
 /**
@@ -245,7 +252,7 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
     throw new Error("请在设置中配置 API Key 或 Base URL");
   }
 
-  // Queue manages concurrency (5)
+  // Queue manages concurrency (1 at a time)
   return apiQueue.add(() => withRetry(async () => {
       return withAuthHeaderInjection(apiKey, baseUrl, async () => {
           const ai = createAIClient(apiKey, baseUrl);
@@ -296,5 +303,5 @@ export const generateImageWithNanoBanana = async (prompt: string, apiKey: string
             throw new Error("生成图片失败");
           }
       });
-  }, 2, 1000));
+  }, 3, 2000));
 };
