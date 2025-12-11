@@ -1,0 +1,5 @@
+{
+  "name": "欢玺AI",
+  "description": "A professional tool for film students and creators to analyze video shots frame-by-frame, generate filmmaking notes, and create AI storyboard prompts using Gemini Nano Banana.",
+  "requestFramePermissions": []
+}

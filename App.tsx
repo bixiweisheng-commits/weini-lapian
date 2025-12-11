@@ -1,0 +1,248 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import { VideoUploader } from './components/VideoUploader';
+import { ShotList } from './components/ShotList';
+import { Shot } from './types';
+import { analyzeFrameWithGemini, generateImageWithNanoBanana } from './services/gemini';
+import { Clapperboard, Settings, Key, X, Save } from 'lucide-react';
+
+const App: React.FC = () => {
+  const [shots, setShots] = useState<Shot[]>([]);
+  
+  // API Key Management State
+  // Priority: 1. Environment Variable 2. Local Storage
+  const [apiKey, setApiKey] = useState<string>(() => {
+    return process.env.API_KEY || localStorage.getItem('huanxi_api_key') || '';
+  });
+  const [showSettings, setShowSettings] = useState(false);
+  const [tempKey, setTempKey] = useState('');
+
+  useEffect(() => {
+    // If no key exists on mount, show settings
+    if (!apiKey) {
+      setShowSettings(true);
+    }
+  }, [apiKey]);
+
+  const handleSaveKey = () => {
+    if (tempKey.trim()) {
+      localStorage.setItem('huanxi_api_key', tempKey.trim());
+      setApiKey(tempKey.trim());
+      setShowSettings(false);
+    }
+  };
+
+  const handleClearKey = () => {
+    localStorage.removeItem('huanxi_api_key');
+    setApiKey(process.env.API_KEY || '');
+    setTempKey('');
+  };
+
+  const handleFramesExtracted = useCallback(async (frames: { time: number; image: string }[]) => {
+    if (!apiKey) {
+      setShowSettings(true);
+      return;
+    }
+
+    // Initialize shots with calculated duration
+    const newShots: Shot[] = frames.map((frame, index) => {
+      // Calculate duration: time difference to next frame, or default 3s for last frame
+      const nextTime = frames[index + 1] ? frames[index + 1].time : frame.time + 3;
+      const duration = Math.round((nextTime - frame.time) * 10) / 10;
+
+      return {
+        id: `shot-${Date.now()}-${index}`,
+        timestamp: frame.time,
+        duration: duration,
+        originalImage: frame.image,
+        isAnalyzing: true,
+        isGeneratingImage: false
+      };
+    });
+
+    setShots(newShots);
+    
+    // Process frames individually
+    frames.forEach(async (frame, index) => {
+      const shotId = newShots[index].id;
+      
+      try {
+        const analysis = await analyzeFrameWithGemini(frame.image, apiKey);
+        
+        setShots(prev => prev.map(s => 
+          s.id === shotId 
+            ? { ...s, isAnalyzing: false, analysis } 
+            : s
+        ));
+      } catch (error) {
+        setShots(prev => prev.map(s => 
+          s.id === shotId 
+            ? { ...s, isAnalyzing: false, error: "Analysis failed. Check API Key." } 
+            : s
+        ));
+      }
+    });
+  }, [apiKey]);
+
+  const handleGenerateImage = async (shotId: string) => {
+    if (!apiKey) {
+      setShowSettings(true);
+      return;
+    }
+
+    const shot = shots.find(s => s.id === shotId);
+    if (!shot || !shot.analysis?.aiPrompt) return;
+
+    setShots(prev => prev.map(s => 
+      s.id === shotId ? { ...s, isGeneratingImage: true, error: undefined } : s
+    ));
+
+    try {
+      const generatedImageBase64 = await generateImageWithNanoBanana(shot.analysis.aiPrompt, apiKey);
+      
+      setShots(prev => prev.map(s => 
+        s.id === shotId ? { ...s, isGeneratingImage: false, generatedImage: generatedImageBase64 } : s
+      ));
+    } catch (error) {
+       setShots(prev => prev.map(s => 
+        s.id === shotId ? { ...s, isGeneratingImage: false, error: "Image generation failed." } : s
+      ));
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30">
+      
+      {/* Header */}
+      <header className="border-b border-gray-800 bg-gray-900/95 sticky top-0 z-50 backdrop-blur-sm">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-600 p-2 rounded-lg">
+              <Clapperboard className="w-6 h-6 text-white" />
+            </div>
+            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400">
+              欢玺AI <span className="text-xs font-medium text-gray-500 ml-2 border border-gray-700 px-2 py-0.5 rounded-full">Nano Banana Edition</span>
+            </h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="hidden md:block text-xs text-gray-500">
+              Powered by Gemini 2.5
+            </div>
+            <button 
+              onClick={() => { setTempKey(apiKey); setShowSettings(true); }}
+              className="p-2 hover:bg-gray-800 rounded-full transition-colors text-gray-400 hover:text-white"
+              title="设置 API Key"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        
+        {shots.length === 0 ? (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] animate-[fadeIn_0.5s_ease-out]">
+            <div className="text-center mb-10 max-w-xl">
+              <h2 className="text-3xl font-bold text-white mb-4">
+                智能逐帧拉片工具
+              </h2>
+              <p className="text-gray-400 text-lg">
+                上传视频，AI 自动拆解镜头、生成专业摄影笔记，并使用 Nano Banana 模型重绘分镜。
+              </p>
+            </div>
+            <VideoUploader 
+              onFramesExtracted={handleFramesExtracted} 
+              onLoadingStart={() => setShots([])} 
+            />
+          </div>
+        ) : (
+          <div className="animate-[slideUp_0.5s_ease-out]">
+            <div className="flex justify-between items-center mb-6">
+              <button 
+                onClick={() => setShots([])}
+                className="text-gray-400 hover:text-white flex items-center gap-2 px-4 py-2 hover:bg-gray-800 rounded-lg transition-colors"
+              >
+                ← 上传新视频
+              </button>
+            </div>
+            <ShotList shots={shots} onGenerateImage={handleGenerateImage} />
+          </div>
+        )}
+
+      </main>
+
+      {/* Footer */}
+      <footer className="border-t border-gray-800 mt-20 py-8 text-center text-gray-600 text-sm">
+        <p>© 2025 Huanxi AI. All rights reserved.</p>
+      </footer>
+
+      {/* API Key Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-[fadeIn_0.2s_ease-out]">
+          <div className="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl max-w-md w-full p-6 relative">
+            <button 
+              onClick={() => setShowSettings(false)}
+              className="absolute top-4 right-4 text-gray-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-6">
+              <div className="bg-purple-600/20 p-3 rounded-lg">
+                <Key className="w-6 h-6 text-purple-400" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-white">配置 API Key</h3>
+                <p className="text-xs text-gray-400">使用您的 Google Gemini Key 以启用功能</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Google GenAI API Key
+                </label>
+                <input
+                  type="password"
+                  value={tempKey}
+                  onChange={(e) => setTempKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
+                />
+              </div>
+
+              <div className="text-xs text-gray-500 leading-relaxed">
+                您的 Key 将仅存储在本地浏览器中（LocalStorage），直接与 Google 服务器通信，不会经过任何第三方服务器。
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-purple-400 hover:text-purple-300 ml-1 underline">
+                  获取免费 Key &rarr;
+                </a>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                {localStorage.getItem('huanxi_api_key') && (
+                   <button
+                    onClick={handleClearKey}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors"
+                  >
+                    清除旧 Key
+                  </button>
+                )}
+                <button
+                  onClick={handleSaveKey}
+                  disabled={!tempKey.trim()}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-purple-900/20"
+                >
+                  <Save className="w-4 h-4" />
+                  保存并继续
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
