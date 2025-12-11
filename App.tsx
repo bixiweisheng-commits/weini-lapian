@@ -39,6 +39,12 @@ const App: React.FC = () => {
     const keyToSave = tempKey.trim();
     const urlToSave = tempBaseUrl.trim();
 
+    // Validation: Prevent user from pasting Key into Base URL field
+    if (urlToSave.startsWith('sk-') && urlToSave.length > 20) {
+      alert("配置错误提醒：\n\n您似乎将 API Key (sk-...) 填入到了 'Base URL' 栏中。\n\n1. 请将 sk- 开头的密钥填入上方的 'API Key' 栏。\n2. Base URL 栏应填写中转站的网址域名 (例如 https://api.proxy.com)。");
+      return;
+    }
+
     // Logic: If user provides Base URL but no Key, we save a placeholder key
     // because the logic elsewhere checks "if (!apiKey) showSettings"
     // and the SDK requires *some* string as a key.
@@ -80,6 +86,30 @@ const App: React.FC = () => {
     window.print();
   };
 
+  const formatErrorMessage = (error: any): string => {
+    let msg = error instanceof Error ? error.message : "请求失败";
+    
+    // Attempt to parse Google JSON error if present in message
+    // Format usually: "[400 Bad Request] {...json...}" or just "{...json...}"
+    try {
+      const jsonMatch = msg.match(/\{.*"error":.*\}/s);
+      if (jsonMatch) {
+        const errorObj = JSON.parse(jsonMatch[0]);
+        if (errorObj.error && errorObj.error.message) {
+          return `API Error: ${errorObj.error.message}`;
+        }
+      }
+    } catch (e) {
+      // ignore parse error
+    }
+    
+    if (msg.includes("API key not valid")) {
+        return "API Key 无效。如果是中转 Key (sk-...)，请确保填写了正确的 Base URL。";
+    }
+
+    return msg;
+  };
+
   const handleFramesExtracted = useCallback(async (frames: { time: number; image: string }[]) => {
     if (!apiKey && !baseUrl) {
       setShowSettings(true);
@@ -115,12 +145,10 @@ const App: React.FC = () => {
         ));
       } catch (error: any) {
         console.error("Analysis failed:", error);
-        // Show specific error message
-        const errorMessage = error instanceof Error ? error.message : "请求失败，请检查 Base URL";
         
         setShots(prev => prev.map(s => 
           s.id === shotId 
-            ? { ...s, isAnalyzing: false, error: errorMessage } 
+            ? { ...s, isAnalyzing: false, error: formatErrorMessage(error) } 
             : s
         ));
       }
@@ -147,9 +175,8 @@ const App: React.FC = () => {
         s.id === shotId ? { ...s, isGeneratingImage: false, generatedImage: generatedImageBase64 } : s
       ));
     } catch (error: any) {
-       const errorMessage = error instanceof Error ? error.message : "生成失败";
        setShots(prev => prev.map(s => 
-        s.id === shotId ? { ...s, isGeneratingImage: false, error: errorMessage } : s
+        s.id === shotId ? { ...s, isGeneratingImage: false, error: formatErrorMessage(error) } : s
       ));
     }
   };
@@ -297,7 +324,7 @@ const App: React.FC = () => {
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
                 />
                  <p className="text-[10px] text-gray-500 mt-1">
-                   推荐填入中转站的域名根目录(如 https://api.xyz.com)，程序会自动处理版本号。
+                   请填入中转站的域名 (如 https://api.proxy.com)。<span className="text-red-400 font-bold">请勿在此处填 Key。</span>
                  </p>
               </div>
 
@@ -309,11 +336,11 @@ const App: React.FC = () => {
                   type="password"
                   value={tempKey}
                   onChange={(e) => setTempKey(e.target.value)}
-                  placeholder={tempBaseUrl ? "如代理不需Key，可留空" : "AIzaSy..."}
+                  placeholder={tempBaseUrl ? "sk-..." : "AIzaSy..."}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all font-mono text-sm"
                 />
                  <p className="text-[10px] text-gray-500 mt-1">
-                   如果使用了代理地址且代理支持免Key，此处可不填或随意填写。
+                   在此处填入您的密钥 (sk-... 或 AIza...)。
                  </p>
               </div>
 

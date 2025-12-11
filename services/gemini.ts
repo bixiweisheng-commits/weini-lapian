@@ -34,10 +34,27 @@ const createAIClient = (apiKey: string, baseUrl?: string) => {
         finalBaseUrl = finalBaseUrl.replace(/(\/v1beta|\/v1|\/google|\/goog)$/i, '');
     }
 
-    return new GoogleGenAI({ 
+    const options: any = { 
         apiKey: effectiveKey, 
         baseUrl: finalBaseUrl 
-    });
+    };
+
+    // 4. Proxy Compatibility Fix:
+    // Many "OneAPI" or relay services use `sk-` keys which require `Authorization: Bearer <key>`.
+    // The default SDK behavior puts the key in `x-goog-api-key`.
+    // We inject the Authorization header to ensure compatibility with OpenAI-compatible proxies forwarding to Gemini.
+    if (finalBaseUrl && effectiveKey && effectiveKey !== "dummy_key_for_proxy") {
+        const headers = {
+            'Authorization': `Bearer ${effectiveKey}`,
+            // Some proxies strictly look for this specific header mapping
+            'X-Goog-Api-Key': effectiveKey 
+        };
+        // Pass to both properties to ensure SDK picks it up depending on version/implementation
+        options.customHeaders = headers;
+        options.headers = headers;
+    }
+
+    return new GoogleGenAI(options);
 };
 
 /**
